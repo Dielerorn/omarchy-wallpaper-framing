@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "dielerorn.wallpaper-framing",
+  "name": "Wallpaper Framing",
+  "version": "0.1.0",
+  "author": "Austin Larson",
+  "license": "MIT",
+  "repository": "https://github.com/Dielerorn/omarchy-wallpaper-framing",
+  "description": "Keeps the native wallpaper picker and adds a framing per wallpaper and monitor: after a pick, drag, zoom and rotate the wallpaper into place on each screen",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Background.qml"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.background"
+  }
+}
