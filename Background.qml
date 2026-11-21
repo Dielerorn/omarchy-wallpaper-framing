@@ -85,9 +85,24 @@ Item {
   property string themeName: ""
 
   property var config: Model.emptyConfig()
+  // The settings file is the framing library, and a save writes only the
+  // entries changed here into whatever the file holds at that moment. So an
+  // edit made to the file meanwhile stays, and a file that cannot be read is
+  // never written over. `diskRaw` is the file as last read or written, parsed
+  // (null: no file yet); `pending` holds changes not in the file yet. They
+  // wait while the file cannot be read and go in once it can.
+  property var diskRaw: null
+  property var pending: []
+  // "", "unreadable" or "unwritable".
+  property string settingsProblem: ""
+  property bool settingsProblemNoticed: false
+  property string probeState: ""
+  property bool writeFailed: false
   // A working copy while the framing mode is open. Everything on screen draws
   // from `view`, so the desktop under the overlay already matches on close.
+  // Saving applies only what changed since `draftBase`, the copy it began as.
   property var draft: null
+  property var draftBase: null
   readonly property var view: draft || config
   readonly property var settings: view.settings
   // Images of a monitor's own that failed to load. Such a monitor follows the
@@ -221,7 +236,7 @@ Item {
   // saved settings when they come from IPC with it closed.
   function mutate(next) {
     if (draft) draft = next
-    else saveConfig(next)
+    else commit(Model.changesBetween(config, next))
   }
 
   function applyFraming(monitor, framing) {
@@ -327,6 +342,7 @@ Item {
     promptOpen = false
     pickPending = false
     draft = Model.copyConfig(config)
+    draftBase = Model.copyConfig(config)
     activeMonitor = monitor && screenNamed(monitor) ? monitor : focusedMonitorName()
     framingOpen = true
     // The controls belong on the monitor the pointer is on. A surface mapped
@@ -345,8 +361,9 @@ Item {
 
   function closeFraming(save) {
     if (!framingOpen) return
-    if (save && draft) saveConfig(draft)
+    if (save && draft) commit(Model.changesBetween(draftBase, draft))
     draft = null
+    draftBase = null
     framingOpen = false
   }
 
@@ -444,20 +461,100 @@ Item {
     }
   }
 
-  function loadConfig(raw) {
-    var parsed = null
-    try {
-      parsed = JSON.parse(String(raw || "").trim() || "{}")
-    } catch (e) {
-      console.warn("wallpaper-framing: settings unreadable, keeping the last good ones: " + e)
-      return
-    }
-    config = Model.normalizeConfig(parsed)
+  // The settings file as it is right now, read past any change not yet heard
+  // from the watcher.
+  function readSettingsFile() {
+    probeState = ""
+    configProbe.reload()
+    configProbe.waitForJob()
+    if (probeState === "loaded") return Model.parseSettings(configProbe.text())
+    return { state: probeState === "missing" ? "missing" : "error" }
   }
 
-  function saveConfig(next) {
+  // Takes in what the file holds, with the changes not yet in it on top. A
+  // file that cannot be read changes nothing: the last settings read stay.
+  function takeDisk(result) {
+    if (result.state === "error") {
+      reportProblem("unreadable")
+      return false
+    }
+    diskRaw = result.state === "ok" ? result.raw : null
+    if (settingsProblem === "unreadable") clearProblem()
+    config = Model.normalizeConfig(Model.applyChanges(diskRaw, pending))
+    return true
+  }
+
+  function commit(changes) {
+    if (changes.length === 0) return
+    pending = Model.mergeChanges(pending, changes)
+    config = Model.normalizeConfig(Model.applyChanges(diskRaw, pending))
+    writePending()
+  }
+
+  function writePending() {
+    retryWrite.stop()
+    if (pending.length === 0 || !takeDisk(readSettingsFile())) return
+    var next = Model.applyChanges(diskRaw, pending)
+    writeFailed = false
+    configFile.setText(JSON.stringify(next, null, 2) + "\n")
+    if (writeFailed) {
+      reportProblem("unwritable")
+      return
+    }
+    diskRaw = next
+    pending = []
     config = Model.normalizeConfig(next)
-    configFile.setText(JSON.stringify(config, null, 2) + "\n")
+    clearProblem()
+  }
+
+  // A change heard from the watcher. Changes that waited on the file go in a
+  // moment later, so an editor that writes in steps has finished.
+  function fileLoaded(result) {
+    if (takeDisk(result) && pending.length > 0) retryWrite.restart()
+  }
+
+  function reportProblem(kind) {
+    if (settingsProblem !== kind) {
+      settingsProblem = kind
+      settingsProblemNoticed = false
+      console.warn("wallpaper-framing: " + (kind === "unreadable"
+        ? "the settings file cannot be read; it is left as it is and changes wait until it can be"
+        : "the settings file cannot be written; changes wait for the next save"))
+    }
+    if (!settingsProblemNoticed) problemNotice.restart()
+  }
+
+  function clearProblem() {
+    if (!settingsProblem) return
+    settingsProblem = ""
+    settingsProblemNoticed = false
+    problemNotice.stop()
+  }
+
+  Timer {
+    id: retryWrite
+    interval: 500
+    onTriggered: root.writePending()
+  }
+
+  // Waits out an editor's half-written file before saying anything, and the
+  // notification service at startup.
+  Timer {
+    id: problemNotice
+    interval: 3000
+    onTriggered: {
+      if (!root.settingsProblem || root.settingsProblemNoticed) return
+      root.settingsProblemNoticed = true
+      var where = root.configPath.indexOf(root.home + "/") === 0 ? "~" + root.configPath.slice(root.home.length) : root.configPath
+      var kind = root.settingsProblem
+      noticeProc.command = ["omarchy-notification-send", "-g", "\uf071",
+        root.strings.t("notice." + kind + ".title"), root.strings.t("notice." + kind + ".body").arg(where)]
+      noticeProc.running = true
+    }
+  }
+
+  Process {
+    id: noticeProc
   }
 
   Process {
@@ -479,8 +576,22 @@ Item {
     atomicWrites: true
     printErrors: false
     blockLoading: true
+    // Writes finish before setText returns, so a failure is known at once.
+    blockWrites: true
     onFileChanged: reload()
-    onLoaded: root.loadConfig(text())
+    onLoaded: root.fileLoaded(Model.parseSettings(text()))
+    onLoadFailed: error => root.fileLoaded({ state: error === FileViewError.FileNotFound ? "missing" : "error" })
+    onSaveFailed: root.writeFailed = true
+  }
+
+  // Reads the settings file on demand, just before a write.
+  FileView {
+    id: configProbe
+    path: root.configPath
+    printErrors: false
+    blockLoading: true
+    onLoaded: root.probeState = "loaded"
+    onLoadFailed: error => root.probeState = error === FileViewError.FileNotFound ? "missing" : "error"
   }
 
   FileView {
@@ -957,7 +1068,8 @@ Item {
       return JSON.stringify({
         open: root.framingOpen, asking: root.promptOpen, active: root.activeMonitor,
         wallpaper: root.currentBackground, key: root.currentKey,
-        settings: root.settings, monitors: monitors
+        settings: root.settings, settingsProblem: root.settingsProblem, unsaved: root.pending.length,
+        monitors: monitors
       })
     }
   }
@@ -1013,7 +1125,7 @@ Item {
   }
 
   Component.onCompleted: {
-    loadConfig(configFile.text())
+    takeDisk(readSettingsFile())
     readThemeName()
     refreshBackground()
   }

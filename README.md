@@ -135,6 +135,13 @@ defaults under `defaults`. Theme wallpapers are named by theme and file
 (`theme:nord/1.jpg`), so two themes that both ship `1.jpg` keep separate
 framings.
 
+A save writes only the framings it changed into the file as it is at that
+moment, so everything else in it stays, including edits made by hand while
+framing mode was open. If the file cannot be read (a typo in a hand edit, say),
+the plugin leaves it untouched and says so in a notification. It keeps using
+the settings it last read, and framings you save stay on screen and are written
+in once the file reads again.
+
 ## IPC
 
 Target `wallpaper-framing`:

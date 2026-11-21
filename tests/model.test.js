@@ -174,3 +174,79 @@ test("edits keep the image", () => {
   assert.equal(M.panTo(f, g, 1000, 1000, -100, 0).image, "/a.jpg")
   assert.equal(M.zoomAt(4000, 2000, 1000, 1000, f, 1, 2, 500, 500).image, "/a.jpg")
 })
+
+test("changesBetween lists only the entries that changed", () => {
+  const base = M.normalizeConfig({
+    defaults: { "DP-1": { ay: 0 } },
+    frames: { a: { "DP-1": { zoom: 2 }, "DP-2": { ax: 0 } }, b: { "DP-1": { ay: 1 } } }
+  })
+  let next = M.withFraming(base, "a", "DP-1", { zoom: 3, ay: 0 })
+  next = M.withFraming(next, "b", "DP-1", M.defaultFor(next, "DP-1"))
+  next = M.withDefault(next, "DP-2", { mode: "fit" }, "")
+  const changes = M.changesBetween(base, next)
+  assert.deepEqual(changes.map(c => [c.kind, c.key || "", c.monitor, c.value && c.value.zoom]), [
+    ["frame", "a", "DP-1", 3],
+    ["frame", "b", "DP-1", null],
+    ["default", "", "DP-2", 1]
+  ])
+  assert.deepEqual(M.changesBetween(base, M.copyConfig(base)), [])
+})
+
+test("mergeChanges keeps the latest change to each entry", () => {
+  const older = [{ kind: "frame", key: "a", monitor: "DP-1", value: { zoom: 2 } }, { kind: "default", monitor: "DP-1", value: null }]
+  const newer = [{ kind: "frame", key: "a", monitor: "DP-1", value: null }, { kind: "frame", key: "b", monitor: "DP-1", value: { zoom: 4 } }]
+  const merged = M.mergeChanges(older, newer)
+  assert.equal(merged.length, 3)
+  assert.equal(merged[0].value, null)
+  assert.equal(merged[2].key, "b")
+})
+
+test("a save writes its changes into the file as it is now, not as it was", () => {
+  // The file when the framing mode opened, then an edit made to it meanwhile.
+  const opened = { version: 1, frames: { a: { "DP-1": { zoom: 2 } } } }
+  const onDisk = {
+    version: 1, note: "kept", settings: { afterPick: "off" },
+    defaults: { "HDMI-A-1": { ay: 1 } },
+    frames: { a: { "DP-1": { zoom: 2 } }, c: { "DP-2": { zoom: 5, future: true } }, junk: "left alone" }
+  }
+  const before = M.normalizeConfig(opened)
+  const draft = M.withFraming(before, "b", "DP-1", { zoom: 3 })
+  const written = M.applyChanges(onDisk, M.changesBetween(before, draft))
+  assert.equal(written.note, "kept")
+  assert.equal(written.settings.afterPick, "off")
+  assert.deepEqual(written.defaults, onDisk.defaults)
+  assert.deepEqual(written.frames.a, onDisk.frames.a)
+  assert.deepEqual(written.frames.c, onDisk.frames.c)
+  assert.equal(written.frames.junk, "left alone")
+  assert.equal(written.frames.b["DP-1"].zoom, 3)
+  // The file itself is not modified in place.
+  assert.equal(onDisk.frames.b, undefined)
+})
+
+test("removing a framing removes only that entry", () => {
+  const onDisk = { frames: { a: { "DP-1": { zoom: 2 }, "DP-2": { zoom: 3 } }, b: { "DP-1": { zoom: 4 } } } }
+  const one = M.applyChanges(onDisk, [{ kind: "frame", key: "a", monitor: "DP-1", value: null }])
+  assert.deepEqual(Object.keys(one.frames.a), ["DP-2"])
+  const both = M.applyChanges(one, [{ kind: "frame", key: "a", monitor: "DP-2", value: null }])
+  assert.equal(both.frames.a, undefined)
+  assert.equal(both.frames.b["DP-1"].zoom, 4)
+})
+
+test("with no file yet, changes start from the defaults", () => {
+  const written = M.applyChanges(null, [{ kind: "default", monitor: "DP-1", value: { ay: 0 } }])
+  assert.equal(written.version, 1)
+  assert.equal(written.settings.afterPick, "ask")
+  assert.equal(written.defaults["DP-1"].ay, 0)
+})
+
+test("parseSettings refuses anything it could not write back faithfully", () => {
+  assert.equal(M.parseSettings('{"frames": {}').state, "error")
+  assert.equal(M.parseSettings("[1, 2]").state, "error")
+  assert.equal(M.parseSettings('"text"').state, "error")
+  assert.equal(M.parseSettings("null").state, "error")
+  assert.equal(M.parseSettings("").state, "missing")
+  assert.equal(M.parseSettings("  \n").state, "missing")
+  const ok = M.parseSettings('{"version": 1}')
+  assert.equal(ok.state, "ok")
+  assert.equal(ok.raw.version, 1)
+})

@@ -279,6 +279,96 @@ function withoutImage(config, key, monitor) {
   return withFraming(config, key, monitor, fallback.image ? defaultFraming() : fallback)
 }
 
+function union(a, b) {
+  var out = a.slice()
+  b.forEach(function(item) { if (out.indexOf(item) < 0) out.push(item) })
+  return out
+}
+
+// What changed from one config to another, entry by entry: a monitor's
+// framing for one wallpaper, or a monitor's default. A change with a null
+// value takes the entry away. Settings are not edited here, so they are not
+// compared.
+function changesBetween(base, next) {
+  var a = normalizeConfig(base), b = normalizeConfig(next)
+  var out = []
+  function compare(kind, key, monitor, before, after) {
+    if (!before && !after) return
+    if (before && after && sameFraming(before, after)) return
+    var change = { kind: kind, monitor: monitor, value: after ? normalizeFraming(after) : null }
+    if (kind === "frame") change.key = key
+    out.push(change)
+  }
+  union(Object.keys(a.frames), Object.keys(b.frames)).forEach(function(key) {
+    var x = a.frames[key] || {}, y = b.frames[key] || {}
+    union(Object.keys(x), Object.keys(y)).forEach(function(monitor) {
+      compare("frame", key, monitor, x[monitor], y[monitor])
+    })
+  })
+  union(Object.keys(a.defaults), Object.keys(b.defaults)).forEach(function(monitor) {
+    compare("default", "", monitor, a.defaults[monitor], b.defaults[monitor])
+  })
+  return out
+}
+
+function changeId(change) {
+  return change.kind === "default" ? "default\n" + change.monitor : "frame\n" + change.key + "\n" + change.monitor
+}
+
+// Two lists of changes as one; a later change to the same entry wins.
+function mergeChanges(older, newer) {
+  var byId = {}, order = []
+  var all = (older || []).concat(newer || [])
+  all.forEach(function(change) {
+    var id = changeId(change)
+    if (!(id in byId)) order.push(id)
+    byId[id] = change
+  })
+  return order.map(function(id) { return byId[id] })
+}
+
+// Writes changes into the settings file's contents as parsed. Only the
+// entries named are touched: everything else, including entries and fields
+// this version does not read, is written back as it was. With no file yet,
+// the changes start from the defaults.
+function applyChanges(raw, changes) {
+  var out = plain(raw) ? Object.assign({}, raw) : emptyConfig()
+  var frames = plain(out.frames) ? Object.assign({}, out.frames) : {}
+  var defaults = plain(out.defaults) ? Object.assign({}, out.defaults) : {}
+  var list = changes || []
+  list.forEach(function(change) {
+    if (!validName(change.monitor)) return
+    if (change.kind === "default") {
+      if (change.value) defaults[change.monitor] = normalizeFraming(change.value)
+      else delete defaults[change.monitor]
+      return
+    }
+    if (change.kind !== "frame" || !change.key || change.key.length > MAX_KEY) return
+    var entry = plain(frames[change.key]) ? Object.assign({}, frames[change.key]) : {}
+    if (change.value) entry[change.monitor] = normalizeFraming(change.value)
+    else delete entry[change.monitor]
+    if (Object.keys(entry).length > 0) frames[change.key] = entry
+    else delete frames[change.key]
+  })
+  out.defaults = defaults
+  out.frames = frames
+  return out
+}
+
+// The settings file's text, parsed. Empty text is no settings yet. Anything
+// that is not a JSON object is unreadable, and a file that cannot be read is
+// never written over.
+function parseSettings(text) {
+  var trimmed = String(text || "").trim()
+  if (!trimmed) return { state: "missing" }
+  try {
+    var parsed = JSON.parse(trimmed)
+    return plain(parsed) ? { state: "ok", raw: parsed } : { state: "error" }
+  } catch (e) {
+    return { state: "error" }
+  }
+}
+
 function fileName(path) {
   var text = String(path || "")
   return text.slice(text.lastIndexOf("/") + 1)
@@ -290,5 +380,7 @@ if (typeof module !== "undefined") module.exports = {
   panTo: panTo, zoomAt: zoomAt, cropLoss: cropLoss, keyFor: keyFor, emptyConfig: emptyConfig,
   normalizeSettings: normalizeSettings, normalizeConfig: normalizeConfig, defaultFor: defaultFor,
   hasFraming: hasFraming, framingFor: framingFor, copyConfig: copyConfig, withFraming: withFraming,
-  withDefault: withDefault, withImage: withImage, withoutImage: withoutImage, fileName: fileName
+  withDefault: withDefault, withImage: withImage, withoutImage: withoutImage, fileName: fileName,
+  changesBetween: changesBetween, mergeChanges: mergeChanges, applyChanges: applyChanges,
+  parseSettings: parseSettings
 }

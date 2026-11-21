@@ -30,5 +30,9 @@
   "tip.reset": "Back to this monitor's default framing (Backspace)",
   "tip.otherImage": "Show a different image on this monitor whenever this wallpaper is set",
   "tip.followWallpaper": "Show the wallpaper itself on this monitor again; right-click picks another image instead",
-  "overlay.video": "This monitor shows the video wallpaper, which the video engine frames. Choose another image to give it a still of its own."
+  "overlay.video": "This monitor shows the video wallpaper, which the video engine frames. Choose another image to give it a still of its own.",
+  "notice.unreadable.title": "Wallpaper framing settings can't be read",
+  "notice.unreadable.body": "%1 has an error, so it is left untouched. Framings you save are kept and written into it once it is fixed.",
+  "notice.unwritable.title": "Wallpaper framing settings can't be saved",
+  "notice.unwritable.body": "Couldn't write %1. Your framing stays on screen and is saved with the next change."
 }
