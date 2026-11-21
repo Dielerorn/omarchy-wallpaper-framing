@@ -250,3 +250,48 @@ test("parseSettings refuses anything it could not write back faithfully", () => 
   assert.equal(ok.state, "ok")
   assert.equal(ok.raw.version, 1)
 })
+
+test("a save changes only the settings it changed within one framing", () => {
+  // Rotated in an open draft while the same entry's image was changed outside.
+  const opened = M.normalizeConfig({ frames: { a: { "DP-1": { zoom: 2, image: "/old.jpg" } } } })
+  const draft = M.withFraming(opened, "a", "DP-1", Object.assign(M.framingFor(opened, "a", "DP-1"), { rotation: 90 }))
+  const changes = M.changesBetween(opened, draft)
+  assert.deepEqual(changes[0].fields, { rotation: 90 })
+  const onDisk = { frames: { a: { "DP-1": { mode: "fill", zoom: 2, ax: 0.5, ay: 0.5, rotation: 0, image: "/new.jpg", future: 1 } } } }
+  const written = M.applyChanges(onDisk, changes).frames.a["DP-1"]
+  assert.equal(written.rotation, 90)
+  assert.equal(written.image, "/new.jpg")
+  assert.equal(written.future, 1)
+})
+
+test("taking a monitor's own image away removes only the image", () => {
+  const opened = M.normalizeConfig({ frames: { a: { "DP-1": { zoom: 2, image: "/own.jpg" } } } })
+  const draft = M.withFraming(opened, "a", "DP-1", { zoom: 2 })
+  const changes = M.changesBetween(opened, draft)
+  assert.deepEqual(changes[0].fields, { image: null })
+  const written = M.applyChanges({ frames: { a: { "DP-1": { zoom: 3, image: "/own.jpg" } } } }, changes).frames.a["DP-1"]
+  assert.equal(written.image, undefined)
+  assert.equal(written.zoom, 3)
+})
+
+test("changed settings on an entry gone from the file bring the whole entry back", () => {
+  const opened = M.normalizeConfig({ defaults: { "DP-1": { ay: 0 } } })
+  const draft = M.withDefault(opened, "DP-1", { ay: 0, zoom: 2 }, "")
+  const changes = M.changesBetween(opened, draft)
+  assert.deepEqual(changes[0].fields, { zoom: 2 })
+  const written = M.applyChanges({ defaults: {} }, changes)
+  assert.deepEqual(written.defaults["DP-1"], M.normalizeFraming({ ay: 0, zoom: 2 }))
+})
+
+test("changes held across saves add up per setting", () => {
+  const part = (fields, value) => ({ kind: "frame", key: "a", monitor: "DP-1", value, fields })
+  const both = M.mergeChanges([part({ rotation: 90 }, { rotation: 90 })], [part({ zoom: 2 }, { rotation: 90, zoom: 2 })])
+  assert.deepEqual(both[0].fields, { rotation: 90, zoom: 2 })
+  // Settings changed after a whole new entry leave a whole entry.
+  const whole = M.mergeChanges([{ kind: "frame", key: "a", monitor: "DP-1", value: { zoom: 2 } }], [part({ ay: 0 }, { zoom: 2, ay: 0 })])
+  assert.equal(whole[0].fields, undefined)
+  assert.deepEqual(whole[0].value, { zoom: 2, ay: 0 })
+  // A removal wins.
+  const gone = M.mergeChanges([part({ zoom: 2 }, { zoom: 2 })], [{ kind: "frame", key: "a", monitor: "DP-1", value: null }])
+  assert.equal(gone[0].value, null)
+})

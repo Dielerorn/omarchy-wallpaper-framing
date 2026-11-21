@@ -285,17 +285,35 @@ function union(a, b) {
   return out
 }
 
+var FRAMING_FIELDS = ["mode", "zoom", "ax", "ay", "rotation", "image"]
+
+// The settings that differ between two framings, with null for one taken
+// away, or null when none do.
+function fieldChanges(before, after) {
+  var x = normalizeFraming(before), y = normalizeFraming(after)
+  var fields = {}, any = false
+  FRAMING_FIELDS.forEach(function(name) {
+    if (x[name] === y[name]) return
+    fields[name] = y[name] === undefined ? null : y[name]
+    any = true
+  })
+  return any ? fields : null
+}
+
 // What changed from one config to another, entry by entry: a monitor's
-// framing for one wallpaper, or a monitor's default. A change with a null
-// value takes the entry away. Settings are not edited here, so they are not
-// compared.
+// framing for one wallpaper, or a monitor's default. `value` is the entry as
+// it now stands, null when it was taken away. An entry that was already there
+// also carries `fields`, the settings changed in it, so a save touches only
+// those. Settings are not edited here, so they are not compared.
 function changesBetween(base, next) {
   var a = normalizeConfig(base), b = normalizeConfig(next)
   var out = []
   function compare(kind, key, monitor, before, after) {
     if (!before && !after) return
-    if (before && after && sameFraming(before, after)) return
+    var fields = before && after ? fieldChanges(before, after) : null
+    if (before && after && !fields) return
     var change = { kind: kind, monitor: monitor, value: after ? normalizeFraming(after) : null }
+    if (fields) change.fields = fields
     if (kind === "frame") change.key = key
     out.push(change)
   }
@@ -315,22 +333,48 @@ function changeId(change) {
   return change.kind === "default" ? "default\n" + change.monitor : "frame\n" + change.key + "\n" + change.monitor
 }
 
-// Two lists of changes as one; a later change to the same entry wins.
+// One entry changed twice. A later removal or whole entry wins; two sets of
+// changed settings add up; settings changed on top of a whole entry leave a
+// whole entry, as it now stands.
+function combineChanges(older, newer) {
+  if (!older || newer.value === null || !newer.fields) return newer
+  var out = Object.assign({}, newer)
+  if (older.value === null || !older.fields) delete out.fields
+  else out.fields = Object.assign({}, older.fields, newer.fields)
+  return out
+}
+
+// Two lists of changes as one.
 function mergeChanges(older, newer) {
   var byId = {}, order = []
   var all = (older || []).concat(newer || [])
   all.forEach(function(change) {
     var id = changeId(change)
     if (!(id in byId)) order.push(id)
-    byId[id] = change
+    byId[id] = combineChanges(byId[id], change)
   })
   return order.map(function(id) { return byId[id] })
 }
 
+// An entry with a change applied. Changed settings go into the entry the file
+// holds, leaving the rest of it as it is; with no such entry, the change's
+// whole entry is used. Undefined: the entry goes.
+function applyEntry(current, change) {
+  if (!change.value) return undefined
+  if (!change.fields || !plain(current)) return normalizeFraming(change.value)
+  var merged = Object.assign({}, current)
+  Object.keys(change.fields).forEach(function(name) {
+    if (FRAMING_FIELDS.indexOf(name) < 0) return
+    if (change.fields[name] === null) delete merged[name]
+    else merged[name] = change.fields[name]
+  })
+  return merged
+}
+
 // Writes changes into the settings file's contents as parsed. Only the
-// entries named are touched: everything else, including entries and fields
-// this version does not read, is written back as it was. With no file yet,
-// the changes start from the defaults.
+// entries and settings named are touched: everything else, including entries
+// and fields this version does not read, is written back as it was. With no
+// file yet, the changes start from the defaults.
 function applyChanges(raw, changes) {
   var out = plain(raw) ? Object.assign({}, raw) : emptyConfig()
   var frames = plain(out.frames) ? Object.assign({}, out.frames) : {}
@@ -338,14 +382,17 @@ function applyChanges(raw, changes) {
   var list = changes || []
   list.forEach(function(change) {
     if (!validName(change.monitor)) return
+    var value
     if (change.kind === "default") {
-      if (change.value) defaults[change.monitor] = normalizeFraming(change.value)
+      value = applyEntry(defaults[change.monitor], change)
+      if (value) defaults[change.monitor] = value
       else delete defaults[change.monitor]
       return
     }
     if (change.kind !== "frame" || !change.key || change.key.length > MAX_KEY) return
     var entry = plain(frames[change.key]) ? Object.assign({}, frames[change.key]) : {}
-    if (change.value) entry[change.monitor] = normalizeFraming(change.value)
+    value = applyEntry(entry[change.monitor], change)
+    if (value) entry[change.monitor] = value
     else delete entry[change.monitor]
     if (Object.keys(entry).length > 0) frames[change.key] = entry
     else delete frames[change.key]

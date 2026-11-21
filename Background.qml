@@ -461,14 +461,21 @@ Item {
     }
   }
 
-  // The settings file as it is right now, read past any change not yet heard
-  // from the watcher.
-  function readSettingsFile() {
+  // The settings file's text as it is on disk right now, read past any change
+  // not yet heard from the watcher: null when there is no file, undefined when
+  // it cannot be read.
+  function readSettingsText() {
     probeState = ""
     configProbe.reload()
     configProbe.waitForJob()
-    if (probeState === "loaded") return Model.parseSettings(configProbe.text())
-    return { state: probeState === "missing" ? "missing" : "error" }
+    if (probeState === "loaded") return configProbe.text()
+    return probeState === "missing" ? null : undefined
+  }
+
+  function readSettingsFile() {
+    var text = readSettingsText()
+    if (text === undefined) return { state: "error" }
+    return text === null ? { state: "missing" } : Model.parseSettings(text)
   }
 
   // Takes in what the file holds, with the changes not yet in it on top. A
@@ -495,9 +502,12 @@ Item {
     retryWrite.stop()
     if (pending.length === 0 || !takeDisk(readSettingsFile())) return
     var next = Model.applyChanges(diskRaw, pending)
+    var text = JSON.stringify(next, null, 2) + "\n"
     writeFailed = false
-    configFile.setText(JSON.stringify(next, null, 2) + "\n")
-    if (writeFailed) {
+    configFile.setText(text)
+    // Quickshell reports a failed atomic commit as saved, so the changes are
+    // let go only once the file read back from disk holds what was written.
+    if (writeFailed || readSettingsText() !== text) {
       reportProblem("unwritable")
       return
     }
@@ -576,7 +586,7 @@ Item {
     atomicWrites: true
     printErrors: false
     blockLoading: true
-    // Writes finish before setText returns, so a failure is known at once.
+    // Writes finish before setText returns, so they can be checked at once.
     blockWrites: true
     onFileChanged: reload()
     onLoaded: root.fileLoaded(Model.parseSettings(text()))
